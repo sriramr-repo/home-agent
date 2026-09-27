@@ -1,0 +1,54 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: muse-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: muse_db
+      POSTGRES_USER: muse_user
+      POSTGRES_PASSWORD: muse_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muse_user -d muse_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: muse-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - .:/project
+      - ./tests:/tests
+      - /app/.venv
+      - agent_sandbox:/tmp/sandbox_workspace
+    environment:
+      - PYTHONPATH=/app:/project
+      - DATABASE_URL=postgresql://muse_user:muse_password@db:5432/muse_db
+    depends_on:
+      db:
+        condition: service_healthy
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: muse-web
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+volumes:
+  postgres_data:
+  agent_sandbox:
