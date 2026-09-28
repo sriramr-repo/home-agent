@@ -1,4 +1,4 @@
-# Muse Agent
+# Muse Agent - Personal Home
 
 A containerized multi-agent orchestration platform with sliding-window context compaction, out-of-band Sentinel security gates, append-only flight recorder chronicles, dynamic self-healing tool registration, and workspace taint guards.
 
