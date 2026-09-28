@@ -55,6 +55,43 @@ def _normalize_response(raw: dict[str, Any], message: dict[str, Any]) -> dict[st
     return {"content": message.get("content", ""), "tool_calls": calls, "message": message, "raw": raw}
 
 
+_TRUNCATED = "[Observation Truncated: Verified intermediate execution milestone output. Passed.]"
+
+
+def _compact_messages(
+    messages: list[dict[str, Any]],
+    max_items: int = 6,
+    max_chars: int = 8000,
+    max_content: int = 800,
+) -> list[dict[str, Any]]:
+    """Truncate bulky intermediate observations, leaving anchors intact.
+
+    Anchors: every system message, the first user message, and the last 2 entries.
+    ponytail: character-count heuristic, not tokens. Swap in a real tokenizer if a
+    provider starts rejecting payloads on token count.
+    """
+    total = sum(len(m.get("content") or "") for m in messages)
+    if len(messages) <= max_items and total <= max_chars:
+        return messages
+    keep = {len(messages) - 1, len(messages) - 2}
+    first_user = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
+    if first_user is not None:
+        keep.add(first_user)
+    out = []
+    for i, m in enumerate(messages):
+        content = m.get("content")
+        if (
+            i in keep
+            or m.get("role") == "system"
+            or not isinstance(content, str)
+            or len(content) <= max_content
+        ):
+            out.append(m)
+        else:
+            out.append({**m, "content": _TRUNCATED})
+    return out
+
+
 class LocalModel(ModelProvider):
     def __init__(self, base_url: str | None = None, model: str | None = None, timeout: float | None = None) -> None:
         self.base_url = (base_url or os.getenv("LLM_BASE_URL", "http://localhost:11434")).rstrip("/")
@@ -62,7 +99,7 @@ class LocalModel(ModelProvider):
         self.timeout = timeout or float(os.getenv("MODEL_TIMEOUT", "120"))
 
     def invoke(self, messages, tools=None):
-        payload = {"model": self.model, "messages": messages, "stream": False}
+        payload = {"model": self.model, "messages": _compact_messages(messages), "stream": False}
         if tools:
             payload["tools"] = tools
         request = Request(f"{self.base_url}/api/chat", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
@@ -95,7 +132,7 @@ class NineRouterModel(ModelProvider):
             raise NineRouterModelError("9router requires LLM_BASE_URL and LLM_MODEL")
 
     def invoke(self, messages, tools=None):
-        payload = {"model": self.model, "messages": messages, "stream": False}
+        payload = {"model": self.model, "messages": _compact_messages(messages), "stream": False}
         if tools:
             payload["tools"] = tools
         headers = {"Content-Type": "application/json"}

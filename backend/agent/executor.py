@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import Any
@@ -8,9 +9,9 @@ from typing import Any
 from ..tools.editor import edit_file, write_file
 from ..tools.filesystem import Workspace
 from ..tools.git import git_diff, git_status
-from ..tools.registry import TOOL_SCHEMAS, ToolRegistry
+from ..tools.registry import TOOL_SCHEMAS, ToolRegistry, enforce_sandbox_acl
 from ..tools.terminal import run_command
-from .model import get_model_provider, ModelProviderError
+from .model import get_model_provider, ModelProviderError, _TRUNCATED
 
 LocalModel = get_model_provider
 from .state import AgentState
@@ -26,6 +27,8 @@ _TOOLS = {
     "git_status": git_status,
     "git_diff": git_diff,
 }
+
+logger = logging.getLogger("muse.agent")
 
 REGISTRY = ToolRegistry(_TOOLS)
 MAX_AGENT_ITERATIONS = int(os.getenv("MAX_AGENT_ITERATIONS", "20"))
@@ -50,7 +53,14 @@ def _run_calls(st: AgentState, clls: list[Any]) -> AgentState:
             st.status, st.error = "failed", "max tool calls exceeded"
             return st
         try:
+            enforce_sandbox_acl(c_args, st.user_id, st.project_id)
             result = REGISTRY.get(c_name)(**c_args, workspace=workspace)
+        except PermissionError as exc:
+            logger.error(
+                "sandbox ACL denied task_id=%s user_id=%s project_id=%s tool=%s args=%s",
+                st.task_id, st.user_id, st.project_id, c_name, c_args,
+            )
+            result = {"ok": False, "error": str(exc)}
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
         st.tool_results.append(result)
@@ -85,6 +95,7 @@ def execute_task(state: AgentState) -> AgentState:
             state.status = "executing"
             denied = "Tool execution explicitly denied by user."
             p_name, _ = _call_parts(pending)
+            logger.info("approval consumed task_id=%s approved=False tool=%s", state.task_id, p_name)
             state.messages.append({"role": "tool", "tool_name": p_name, "content": denied})
             state.tool_results.append({"ok": False, "error": denied})
             state.observations.append(denied)
@@ -92,6 +103,11 @@ def execute_task(state: AgentState) -> AgentState:
         if state.user_approval is True:
             state.user_approval = None
             state.status = "executing"
+            logger.info(
+                "approval consumed task_id=%s approved=True tool=%s",
+                state.task_id,
+                _call_parts(pending)[0],
+            )
             return _run_calls(state, [pending])
         state.status = "awaiting_approval"
         state.pending_action = pending
@@ -100,6 +116,12 @@ def execute_task(state: AgentState) -> AgentState:
     state.status = "executing"
     state.current_step += 1
     state.iteration_count += 1
+    logger.info(
+        "execution start task_id=%s iteration=%s elapsed_total=%.3fs",
+        state.task_id,
+        state.iteration_count,
+        state.total_execution_time,
+    )
 
     if not state.messages:
         state.messages.extend([
@@ -118,6 +140,9 @@ def execute_task(state: AgentState) -> AgentState:
     try:
         model = LocalModel()
         response = model.invoke(state.messages, TOOL_SCHEMAS)
+        elapsed = time.monotonic() - started
+        state.total_execution_time += elapsed
+        state.compacted_turns_count = sum(1 for m in state.messages if m.get("content") == _TRUNCATED)
     except ModelProviderError as exc:
         state.model_invocations.append({
             "invocation": len(state.model_invocations) + 1,
@@ -130,6 +155,13 @@ def execute_task(state: AgentState) -> AgentState:
         })
         state.status = "failed"
         state.error = str(exc)
+        logger.error(
+            "model provider failed task_id=%s elapsed=%.3fs error=%s",
+            state.task_id,
+            time.monotonic() - started,
+            exc,
+            exc_info=True,
+        )
         return state
 
     calls = response.get("tool_calls", [])
@@ -157,6 +189,12 @@ def execute_task(state: AgentState) -> AgentState:
     if high_risk and state.user_approval is not True:
         state.pending_action = high_risk
         state.status = "awaiting_approval"
+        logger.info(
+            "suspended for approval task_id=%s tool=%s elapsed_total=%.3fs",
+            state.task_id,
+            high_risk["name"],
+            state.total_execution_time,
+        )
         return state
 
     # ponytail: Keep user_approval flag intact for multi-turn runs until upgraded.

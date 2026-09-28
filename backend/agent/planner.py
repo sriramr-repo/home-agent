@@ -4,6 +4,7 @@ import json
 from .model import get_model_provider
 
 LocalModel = get_model_provider
+import logging
 from .state import AgentState
 from ..tools.filesystem import Workspace
 
@@ -12,6 +13,7 @@ def plan_task(state: AgentState) -> AgentState:
     if state.status == "failed":
         return state
     state.status = "planning"
+    logger = logging.getLogger("muse.agent")
     ws = Workspace(state.repository_path)
     files_info = ws.list_files(".")
     file_list = files_info.get("files", [])
@@ -44,4 +46,5 @@ def plan_task(state: AgentState) -> AgentState:
 
     state.current_step = 0
     state.current_step_name = "planning"
+    logger.info("planning complete task_id=%s steps=%d", state.task_id, len(state.plan))
     return state

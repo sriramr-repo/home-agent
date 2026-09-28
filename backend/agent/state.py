@@ -35,3 +35,6 @@ class AgentState(BaseModel):
     result: Optional[str] = None
     error: Optional[str] = None
     errors: list[str] = Field(default_factory=list)
+    total_execution_time: float = 0.0
+    compacted_turns_count: int = 0
+    workspace_taint_status: Optional[str] = None

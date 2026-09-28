@@ -11,11 +11,12 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 class CreateTaskRequest(BaseModel):
     objective: str = Field(min_length=1)
+    use_multi_agent: bool = False
 
 
 @router.post("", response_model=AgentState, status_code=status.HTTP_201_CREATED)
 async def create_task(request: CreateTaskRequest) -> AgentState:
-    state = run_agent(request.objective)
+    state = run_agent(request.objective, use_multi_agent=request.use_multi_agent)
     return save_task(state)
 
 
